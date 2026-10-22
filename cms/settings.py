@@ -213,7 +213,7 @@ X_ACCEL_AUTH_CACHE_SECONDS = 300
 
 FFMPEG_COMMAND = "ffmpeg"  # this is the path
 FFPROBE_COMMAND = "ffprobe"  # this is the path
-FFMPEG_THREADS = 1  # passed as -threads to the encoding ffmpeg commands
+FFMPEG_THREADS = 0  # -threads for the encoding ffmpeg commands; 0 lets ffmpeg decide
 MP4HLS = "mp4hls"
 
 MASK_IPS_FOR_ACTIONS = True

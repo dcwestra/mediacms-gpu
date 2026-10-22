@@ -100,22 +100,6 @@ and merges it into the `gpu` branch:
 ## Maintaining the fork
 
 - `main` mirrors upstream. `gpu` (the default branch) is upstream plus the changes above.
-- Merge sync pull requests with **Create a merge commit**, which publishes the image. Squash or
-  rebase would drop upstream's history and break the next sync.
-- The sync needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret, a Claude subscription token made
-  with `claude setup-token`. It's only used when a merge needs fixing.
-- The Docker Hub mirror needs a `DOCKERHUB_USERNAME` repository variable and a `DOCKERHUB_TOKEN` secret.
-- To run the sync by hand, use *Actions → Upstream sync → Run workflow*. `dry_run` reports what
-  would happen without pushing or opening anything. `base` merges into another branch for testing;
-  only `gpu` ever publishes.
-- To merge a release by hand:
-
-  ```sh
-  git fetch upstream --tags
-  git switch gpu
-  git merge vX.Y.Z      # the upstream release tag
-  git push origin gpu   # gpu-image.yml builds and publishes the image
-  ```
 
 ## License
 

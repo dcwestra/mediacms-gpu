@@ -1,0 +1,324 @@
+name: Upstream sync
+
+# Merges new upstream MediaCMS releases into the gpu branch.
+#
+# - Clean merge that passes verification: pushed to gpu, and the GPU image is published.
+# - Merge conflict, or a merge that fails verification: Claude Code fixes it, verification
+#   runs again, and the result is opened as a pull request for review.
+#   Needs the CLAUDE_CODE_OAUTH_TOKEN secret (a Claude subscription token from `claude setup-token`).
+# - Anything that can't be fixed: an issue is opened.
+#
+# Verification = build the image, then .github/upstream-sync/verify.sh (ffmpeg NVENC/CUVID,
+# manage.py check, tests/gpu).
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream release tag to merge (default is the newest vX.Y.Z)
+        required: false
+        default: ''
+      base:
+        description: Branch to merge into. Anything other than gpu never publishes.
+        required: false
+        default: gpu
+      dry_run:
+        description: Dry run. No push, pull request or issue; results go to the run summary.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  BASE: ${{ inputs.base || 'gpu' }}
+  LIVE: ${{ (inputs.base || 'gpu') == 'gpu' && !inputs.dry_run }}
+  TEST_IMAGE: mediacms-gpu:sync-test
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          git remote add upstream https://github.com/mediacms-io/mediacms.git
+          git fetch --quiet --tags upstream
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)
+          tag=${INPUT_TAG:-$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)}
+          git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || { echo "::error::unknown tag $tag"; exit 1; }
+
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            status=current
+          elif [ "$LIVE" = true ] && {
+                 [ -n "$(gh pr list --head "sync/$tag" --state open --json number --jq '.[].number')" ] ||
+                 [ -n "$(gh issue list --state open --search "\"Upstream sync needs attention: $tag\" in:title" --json number --jq '.[].number')" ]; }; then
+            status=pending
+          else
+            status=new
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "prev=$prev"
+            echo "status=$status"
+          } >> "$GITHUB_OUTPUT"
+          case $status in
+            current) msg="\`$BASE\` already contains $tag. Nothing to do." ;;
+            pending) msg="$tag already has an open sync pull request or issue. Nothing to do." ;;
+            new) msg="Merging $tag into \`$BASE\` (previous upstream release: $prev)." ;;
+          esac
+          echo "$msg" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge
+        id: merge
+        if: steps.release.outputs.status == 'new'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PREV: ${{ steps.release.outputs.prev }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "sync/$TAG"
+
+          new_workflows=$(git diff --name-only --diff-filter=A "$PREV" "$TAG" -- .github/workflows | paste -sd ' ')
+          echo "new_workflows=$new_workflows" >> "$GITHUB_OUTPUT"
+
+          if git merge --no-ff --no-edit -m "Merge upstream $TAG into $BASE" "$TAG"; then
+            echo "conflicts=" >> "$GITHUB_OUTPUT"
+            echo "Clean merge." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            conflicts=$(git diff --name-only --diff-filter=U | paste -sd ' ')
+            [ -n "$conflicts" ] || exit 1
+            echo "conflicts=$conflicts" >> "$GITHUB_OUTPUT"
+            echo "Merge conflicts in: $conflicts" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verify clean merge
+        id: verify1
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.conflicts == ''
+        continue-on-error: true
+        run: |
+          { docker build --progress=plain --target base -t "$TEST_IMAGE" . && .github/upstream-sync/verify.sh "$TEST_IMAGE"; } 2>&1 \
+            | tee "$RUNNER_TEMP/verify1.log"
+
+      - name: Publish clean merge
+        if: steps.verify1.outcome == 'success' && env.LIVE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          NEW_WORKFLOWS: ${{ steps.merge.outputs.new_workflows }}
+        run: |
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BASE"
+          # Pushes made with GITHUB_TOKEN don't trigger workflows, so start the image build explicitly.
+          gh workflow run gpu-image.yml --ref "$BASE"
+
+          # Keep upstream's own workflows off in the fork (they release and publish upstream's images).
+          for wf in $NEW_WORKFLOWS; do
+            for _ in 1 2 3; do
+              gh workflow disable "$(basename "$wf")" && continue 2
+              sleep 10
+            done
+            echo "::warning::could not disable new upstream workflow $wf"
+          done
+
+          echo "Merged $TAG into \`$BASE\` and started the GPU image build." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Report dry-run result
+        if: steps.verify1.outcome == 'success' && env.LIVE != 'true'
+        run: echo "Dry run. Verification passed; a live run would push to \`$BASE\` and publish the image." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Ask Claude to fix the merge
+        id: claude
+        if: steps.merge.outcome == 'success' && (steps.merge.outputs.conflicts != '' || steps.verify1.outcome == 'failure')
+        env:
+          # Only the Claude token: no GitHub token is in this step's environment or in .git/config.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          PREV: ${{ steps.release.outputs.prev }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::The CLAUDE_CODE_OAUTH_TOKEN secret is not set, so the merge can't be fixed automatically."
+            exit 1
+          fi
+          npm install --global --silent @anthropic-ai/claude-code
+
+          {
+            echo "## This run"
+            echo
+            echo "- Upstream release being merged: $TAG"
+            echo "- Previous upstream release in \`$BASE\`: $PREV"
+            if [ -n "$CONFLICTS" ]; then
+              echo "- Problem: \`git merge\` stopped with conflicts in: $CONFLICTS"
+            else
+              echo "- Problem: the merge was clean but verification failed. Log: $RUNNER_TEMP/verify1.log"
+            fi
+            echo "- Write your summary to: $RUNNER_TEMP/claude-summary.md"
+            echo
+            cat .github/upstream-sync/claude-prompt.md
+          } > "$RUNNER_TEMP/prompt.md"
+
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --add-dir "$RUNNER_TEMP" \
+            --permission-mode acceptEdits \
+            --permission-prompts none \
+            --max-turns 80 \
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git status *),Bash(git grep *),Bash(python3 -m py_compile *)" \
+            --output-format json > "$RUNNER_TEMP/claude.json"
+          jq -r '"Claude finished: \(.num_turns) turns, subtype \(.subtype)"' "$RUNNER_TEMP/claude.json"
+
+          if [ ! -s "$RUNNER_TEMP/claude-summary.md" ]; then
+            echo "::error::Claude didn't write a summary."
+            exit 1
+          fi
+
+      - name: Check and commit Claude's changes
+        id: commit
+        if: steps.claude.outcome == 'success'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+        run: |
+          for f in $CONFLICTS; do
+            if [ -f "$f" ] && grep -nE '^(<{7}|>{7})( |$)|^={7}$' "$f"; then
+              echo "::error::conflict markers left in $f"
+              exit 1
+            fi
+          done
+
+          touched=$(git status --porcelain --untracked-files=all -- .github | cut -c4-)
+          for f in $touched; do
+            case " $CONFLICTS " in
+              *" $f "*) ;;
+              *) echo "::error::Claude changed $f; .github/ is off limits"; exit 1 ;;
+            esac
+          done
+
+          untracked=$(git ls-files --others --exclude-standard)
+          [ -z "$untracked" ] || echo "::warning::Claude left untracked files, not committed: $untracked"
+
+          git add -u
+          if [ -n "$CONFLICTS" ]; then
+            git commit --no-edit
+          elif git diff --cached --quiet; then
+            echo "::error::Claude made no changes, so the failed verification still stands."
+            exit 1
+          else
+            git commit -m "fix: adapt GPU changes to upstream $TAG"
+          fi
+
+      - name: Verify Claude's fix
+        id: verify2
+        if: steps.commit.outcome == 'success'
+        run: |
+          { docker build --progress=plain --target base -t "$TEST_IMAGE" . && .github/upstream-sync/verify.sh "$TEST_IMAGE"; } 2>&1 \
+            | tee "$RUNNER_TEMP/verify2.log"
+
+      - name: Open pull request
+        if: steps.verify2.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          NEW_WORKFLOWS: ${{ steps.merge.outputs.new_workflows }}
+        run: |
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            if [ -n "$CONFLICTS" ]; then
+              echo "Merging upstream **$TAG** conflicted in: \`$CONFLICTS\`. Claude resolved it, and the rebuilt image passed verification."
+            else
+              echo "Upstream **$TAG** merged cleanly but failed verification. Claude fixed it, and the rebuilt image passed verification."
+            fi
+            echo
+            echo "**Merge with _Create a merge commit_.** Merging publishes the GPU image."
+            if [ -n "$NEW_WORKFLOWS" ]; then
+              echo
+              echo "This release adds upstream workflows. Disable them after merging: \`$NEW_WORKFLOWS\`"
+            fi
+            echo
+            echo "## Claude's summary"
+            echo
+            cat "$RUNNER_TEMP/claude-summary.md"
+            echo
+            echo "## Verification"
+            echo
+            echo '```'
+            tail -n 25 "$RUNNER_TEMP/verify2.log"
+            echo '```'
+          } > "$body"
+
+          if [ "$LIVE" != true ]; then
+            echo "Dry run. Claude's fix passed verification; a live run would open this pull request:" >> "$GITHUB_STEP_SUMMARY"
+            cat "$body" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/sync/$TAG"
+          gh pr create --base "$BASE" --head "sync/$TAG" --title "Merge upstream $TAG" --body-file "$body" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue
+        if: failure() && steps.release.outputs.status == 'new'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/issue-body.md"
+          {
+            echo "Merging upstream **$TAG** into \`$BASE\` needs a person. Run: $RUN_URL"
+            echo
+            [ -z "$CONFLICTS" ] || echo "Merge conflicts in: \`$CONFLICTS\`"
+            if [ -s "$RUNNER_TEMP/claude-summary.md" ]; then
+              echo
+              echo "## Claude's summary"
+              echo
+              cat "$RUNNER_TEMP/claude-summary.md"
+            fi
+            for log in verify2 verify1; do
+              if [ -s "$RUNNER_TEMP/$log.log" ]; then
+                echo
+                echo "## Last verification log ($log)"
+                echo
+                echo '```'
+                tail -n 40 "$RUNNER_TEMP/$log.log"
+                echo '```'
+                break
+              fi
+            done
+          } > "$body"
+
+          if [ "$LIVE" != true ]; then
+            echo "Dry run. A live run would open this issue:" >> "$GITHUB_STEP_SUMMARY"
+            cat "$body" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ -z "$(git ls-files --unmerged)" ] && [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BASE")" ]; then
+            git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/sync/$TAG" &&
+              echo "Work in progress is on branch \`sync/$TAG\`." >> "$body"
+          fi
+          gh issue create --title "Upstream sync needs attention: $TAG" --body-file "$body"

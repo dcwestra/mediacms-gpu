@@ -1,0 +1,96 @@
+# MediaCMS GPU
+
+[MediaCMS](https://github.com/mediacms-io/mediacms) with video encoding on NVIDIA GPUs.
+
+This fork changes only how videos are encoded. Features, installation and configuration are the
+same as upstream MediaCMS, so for everything else read the **[original MediaCMS README](/README.md)**.
+
+## How it differs from MediaCMS
+
+- **NVENC encoding.** h264 and h265 profiles encode with `h264_nvenc` / `hevc_nvenc` instead of
+  libx264 / libx265. VP9 profiles stay on libvpx.
+- **GPU decoding.** h264 sources are decoded on the GPU with `h264_cuvid`. Other sources use
+  `-hwaccel cuda`, which is NVDEC where the GPU supports the format and software decoding otherwise.
+- **Jellyfin ffmpeg.** The image ships the [Jellyfin ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg)
+  portable build, which has NVENC/CUVID support, in place of the stock ffmpeg.
+- **`FFMPEG_THREADS` setting.** Passed as `-threads` to the encode, chunk split and concat commands.
+  The default `0` lets ffmpeg decide, as upstream does.
+
+Everything else is upstream MediaCMS, kept up to date automatically (see [Staying current](#staying-current)).
+
+## Image
+
+| Registry | Image |
+|---|---|
+| GitHub Container Registry | `ghcr.io/dcwestra/mediacms-gpu` |
+| Docker Hub | `dcwestra/mediacms-gpu` |
+
+Tags: `latest`, the MediaCMS version it's built from (for example `9.3.1`), and `sha-<commit>`.
+
+## Running it
+
+Use the upstream docker compose setup ([docs](/docs/admins_docs.md)) with this image in place of
+`mediacms/mediacms`. Add the NVIDIA runtime to the services that encode, at least `celery_worker`:
+
+```yaml
+  celery_worker:
+    image: ghcr.io/dcwestra/mediacms-gpu:latest
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+```
+
+The host needs the NVIDIA driver and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+If you don't mount the whole project directory into the containers (the upstream compose files do),
+set the same `SECRET_KEY` environment variable on every MediaCMS container. Otherwise each container
+generates its own key at startup.
+
+### Small servers
+
+Encodes still use the CPU for scaling and audio, and by default celery runs one encode per CPU core.
+To keep the rest of the server responsive, you can:
+
+- Bind-mount your own `deploy/docker/supervisord/supervisord-celery_long.conf` with `-c 2` added
+  to the celery command, to cap concurrent encodes.
+- Set `FFMPEG_THREADS = 1` in `local_settings.py` to limit decoding threads.
+
+## Staying current
+
+[upstream-sync.yml](/.github/workflows/upstream-sync.yml) checks daily for a new MediaCMS release
+and merges it into the `gpu` branch:
+
+- **Clean merge.** The image is built and verified ([verify.sh](/.github/upstream-sync/verify.sh):
+  ffmpeg NVENC/CUVID support, `manage.py check`, [GPU tests](/tests/gpu/test_gpu_encoding.py)).
+  If it passes, the merge goes to `gpu` and [gpu-image.yml](/.github/workflows/gpu-image.yml)
+  publishes the image.
+- **Conflict or failed verification.** Claude Code fixes the merge following
+  [claude-prompt.md](/.github/upstream-sync/claude-prompt.md), verification runs again, and the
+  result is opened as a pull request for review.
+- **Still failing.** An issue is opened with the logs.
+
+## Maintaining the fork
+
+- `main` mirrors upstream. `gpu` (the default branch) is upstream plus the changes above.
+- Merge sync pull requests with **Create a merge commit**, which publishes the image. Squash or
+  rebase would drop upstream's history and break the next sync.
+- The sync needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret, a Claude subscription token made
+  with `claude setup-token`. It's only used when a merge needs fixing.
+- The Docker Hub mirror needs a `DOCKERHUB_USERNAME` repository variable and a `DOCKERHUB_TOKEN` secret.
+- To run the sync by hand, use *Actions → Upstream sync → Run workflow*. `dry_run` reports what
+  would happen without pushing or opening anything. `base` merges into another branch for testing;
+  only `gpu` ever publishes.
+- To merge a release by hand:
+
+  ```sh
+  git fetch upstream --tags
+  git switch gpu
+  git merge vX.Y.Z      # the upstream release tag
+  git push origin gpu   # gpu-image.yml builds and publishes the image
+  ```
+
+## License
+
+AGPL-3.0, the same as [MediaCMS](/LICENSE.txt).

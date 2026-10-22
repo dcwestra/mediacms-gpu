@@ -1,7 +1,8 @@
 name: GPU image
 
-# Builds the GPU image (Dockerfile "base" target) on every push to the gpu branch and
-# publishes it to ghcr.io/<owner>/<repo> as :latest, :<MediaCMS version> and :sha-<commit>.
+# Builds the GPU images on every push to the gpu branch and publishes them to ghcr.io/<owner>/<repo>:
+# - Dockerfile "base" target as :latest, :<MediaCMS version> and :sha-<commit>
+# - Dockerfile "full" target (adds Whisper transcription) as :full, :<version>-full and :sha-<commit>-full
 #
 # Optional Docker Hub mirror: add a repository variable DOCKERHUB_USERNAME and a
 # repository secret DOCKERHUB_TOKEN (Docker Hub access token, read/write) and the
@@ -37,7 +38,7 @@ jobs:
         id: version
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Docker meta
+      - name: Docker meta for base image
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -51,6 +52,22 @@ jobs:
           labels: |
             org.opencontainers.image.title=MediaCMS GPU
             org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID encoding (Jellyfin ffmpeg)
+            org.opencontainers.image.licenses=AGPL-3.0
+
+      - name: Docker meta for full image
+        id: meta-full
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            name=ghcr.io/${{ github.repository }}
+            name=docker.io/${{ vars.DOCKERHUB_USERNAME || 'disabled' }}/mediacms-gpu,enable=${{ env.DOCKERHUB_ENABLED }}
+          tags: |
+            type=raw,value=full
+            type=raw,value=${{ steps.version.outputs.version }}-full
+            type=sha,prefix=sha-,suffix=-full
+          labels: |
+            org.opencontainers.image.title=MediaCMS GPU (full)
+            org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID encoding (Jellyfin ffmpeg) and Whisper transcription
             org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Set up Docker Buildx
@@ -70,7 +87,7 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push base image
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -81,3 +98,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Reuses the base layers built above; the Whisper layer is too large to keep in the GHA cache.
+      - name: Build and push full image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: full
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-full.outputs.tags }}
+          labels: ${{ steps.meta-full.outputs.labels }}
+          cache-from: type=gha

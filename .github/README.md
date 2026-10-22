@@ -30,7 +30,7 @@ Everything else is upstream MediaCMS, kept up to date automatically (see [Stayin
 | Tag | Contents |
 |---|---|
 | `latest`, `<version>` (e.g. `9.3.1`), `sha-<commit>` | MediaCMS with GPU encoding |
-| `full`, `<version>-full`, `sha-<commit>-full` | The same plus [Whisper](https://github.com/openai/whisper) transcription, which also runs on the GPU |
+| `full`, `<version>-full`, `sha-<commit>-full` | The same plus [Whisper](https://github.com/openai/whisper) transcription, which also runs on the GPU (Turing or newer, see below) |
 
 ## Running it
 
@@ -53,6 +53,11 @@ For Whisper transcription, add the full image and set `USE_WHISPER_TRANSCRIBE = 
 ```sh
 docker compose -f docker-compose.yaml -f docker-compose.full.yaml up -d
 ```
+
+The full image's PyTorch (CUDA 13) supports NVIDIA GPUs from Turing on (compute capability 7.5+:
+GTX 16xx, RTX 20xx and newer, Quadro T-series and newer). On older GPUs, such as Pascal (GTX 10xx,
+Quadro P-series), Whisper tries to use the GPU and fails, so use the standard image there. Video
+encoding isn't affected: it uses ffmpeg, which supports these older GPUs.
 
 With your own compose file, use this image and put `celery_worker`, which runs the encodes, on the NVIDIA runtime:
 

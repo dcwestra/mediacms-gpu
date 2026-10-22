@@ -2,7 +2,7 @@ FROM python:3.13.16-slim-trixie AS build-image
 
 # Install system dependencies needed for downloading and extracting
 RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends wget unzip && \
+    apt-get install -y --no-install-recommends wget unzip xz-utils && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get purge --auto-remove && \
     apt-get clean
@@ -15,6 +15,17 @@ RUN mkdir -p /home/mediacms.io/bento4 && \
     rm -rf /home/mediacms.io/bento4/Bento4-SDK-1-6-0-637.x86_64-unknown-linux && \
     rm -rf /home/mediacms.io/bento4/docs && \
     rm Bento4-SDK-1-6-0-637.x86_64-unknown-linux.zip
+
+# Jellyfin ffmpeg portable build, for NVIDIA NVENC/CUVID support
+# Releases + sha256 digests: https://github.com/jellyfin/jellyfin-ffmpeg/releases
+ARG JELLYFIN_FFMPEG_VERSION=8.1.3-1
+ARG JELLYFIN_FFMPEG_SHA256=b86dc023c64a5a9a410e6e3a938a970460214fae78f31c1553c9f88f1c289b6a
+RUN mkdir -p /opt/jellyfin-ffmpeg && \
+    wget -q --tries=5 --waitretry=10 --timeout=30 -O jellyfin-ffmpeg.tar.xz \
+        https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${JELLYFIN_FFMPEG_VERSION}/jellyfin-ffmpeg_${JELLYFIN_FFMPEG_VERSION}_portable_linux64-gpl.tar.xz && \
+    echo "${JELLYFIN_FFMPEG_SHA256}  jellyfin-ffmpeg.tar.xz" | sha256sum -c - && \
+    tar -xf jellyfin-ffmpeg.tar.xz -C /opt/jellyfin-ffmpeg && \
+    rm jellyfin-ffmpeg.tar.xz
 
 ############ BASE RUNTIME IMAGE ############
 FROM python:3.13.16-slim-trixie AS base
@@ -69,8 +80,8 @@ RUN pip install --no-cache-dir uv && \
         libxmlsec1-dev \
         libpq-dev
 
-# Copy ffmpeg from a published MediaCMS image and Bento4 from build image
-COPY --from=mediacms/mediacms:7.2.0@sha256:2767185c22196008aa9af1df7d33f00010e0bacf7c2a974f9d59cf3383550005 /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/qt-faststart /usr/local/bin/
+# Copy Jellyfin ffmpeg and Bento4 from build image
+COPY --from=build-image /opt/jellyfin-ffmpeg/ffmpeg /opt/jellyfin-ffmpeg/ffprobe /usr/local/bin/
 COPY --from=build-image /home/mediacms.io/bento4 /home/mediacms.io/bento4
 
 # Copy application files

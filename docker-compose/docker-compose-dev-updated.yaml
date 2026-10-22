@@ -94,11 +94,14 @@ services:
   celery_worker:
     platform: linux/amd64
     image: mediacms/mediacms:latest
+    runtime: nvidia
     deploy:
       replicas: 1
     volumes:
       - ../:/home/mediacms.io/mediacms/
     environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
       ENABLE_UWSGI: 'no'
       ENABLE_NGINX: 'no'
       ENABLE_CELERY_BEAT: 'no'

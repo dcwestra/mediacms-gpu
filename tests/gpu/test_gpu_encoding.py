@@ -9,6 +9,16 @@ from files import helpers
 
 CUVID_INPUT_ARGS = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "h264_cuvid"]
 
+GPU_IMAGE = "ghcr.io/dcwestra/mediacms-gpu"
+COMPOSE_FILES = [
+    "docker-compose.yaml",
+    "docker-compose/docker-compose-http-proxy.yaml",
+    "docker-compose/docker-compose-https-proxy.yaml",
+    "docker-compose/docker-compose-letsencrypt.yaml",
+    "docker-compose/docker-compose-named-volumes.yaml",
+]
+DEV_COMPOSE_FILES = ["docker-compose-dev.yaml", "docker-compose/docker-compose-dev-updated.yaml"]
+
 
 def media_info(**overrides):
     info = {
@@ -44,6 +54,12 @@ def video_filters(cmd):
 def read_source(*parts):
     with open(os.path.join(settings.BASE_DIR, *parts)) as f:
         return f.read()
+
+
+def compose_service(path, name):
+    """The indented body of one service in a compose file."""
+    match = re.search(rf"^  {name}:\n((?:    .*\n|[ \t]*\n)*)", read_source(path), re.M)
+    return match.group(1) if match else ""
 
 
 class GpuEncoderTests(SimpleTestCase):
@@ -129,3 +145,24 @@ class GpuThreadsTests(SimpleTestCase):
             source,
             re.compile(r'settings\.FFMPEG_COMMAND,\s*"-threads",\s*str\(settings\.FFMPEG_THREADS\),\s*"-y",\s*"-f",\s*"concat"'),
         )
+
+
+class GpuComposeTests(SimpleTestCase):
+    def test_compose_files_run_the_gpu_image(self):
+        for path in COMPOSE_FILES:
+            with self.subTest(path=path):
+                source = read_source(path)
+
+                self.assertIn(f"image: {GPU_IMAGE}:latest", source)
+                self.assertNotIn("image: mediacms/mediacms:", source)
+
+    def test_full_compose_runs_the_gpu_full_image(self):
+        self.assertIn(f"image: {GPU_IMAGE}:full", read_source("docker-compose.full.yaml"))
+
+    def test_celery_worker_runs_on_the_nvidia_runtime(self):
+        for path in COMPOSE_FILES + DEV_COMPOSE_FILES:
+            with self.subTest(path=path):
+                worker = compose_service(path, "celery_worker")
+
+                self.assertIn("    runtime: nvidia\n", worker)
+                self.assertIn("NVIDIA_DRIVER_CAPABILITIES: all", worker)

@@ -15,6 +15,8 @@ same as upstream MediaCMS, so for everything else read the **[original MediaCMS 
   portable build, which has NVENC/CUVID support, in place of the stock ffmpeg.
 - **`FFMPEG_THREADS` setting.** Passed as `-threads` to the encode, chunk split and concat commands.
   The default `0` lets ffmpeg decide, as upstream does.
+- **Compose files.** The repository's compose files run this fork's image, and `celery_worker`
+  runs on the NVIDIA runtime.
 
 Everything else is upstream MediaCMS, kept up to date automatically (see [Staying current](#staying-current)).
 
@@ -25,12 +27,34 @@ Everything else is upstream MediaCMS, kept up to date automatically (see [Stayin
 | GitHub Container Registry | `ghcr.io/dcwestra/mediacms-gpu` |
 | Docker Hub | `dcwestra/mediacms-gpu` |
 
-Tags: `latest`, the MediaCMS version it's built from (for example `9.3.1`), and `sha-<commit>`.
+| Tag | Contents |
+|---|---|
+| `latest`, `<version>` (e.g. `9.3.1`), `sha-<commit>` | MediaCMS with GPU encoding |
+| `full`, `<version>-full`, `sha-<commit>-full` | The same plus [Whisper](https://github.com/openai/whisper) transcription, which also runs on the GPU |
 
 ## Running it
 
-Use the upstream docker compose setup ([docs](/docs/admins_docs.md)) with this image in place of
-`mediacms/mediacms`. Add the NVIDIA runtime to the services that encode, at least `celery_worker`:
+The host needs the NVIDIA driver and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
+with the `nvidia` runtime registered in Docker (`sudo nvidia-ctk runtime configure --runtime=docker`,
+then restart Docker).
+
+Then follow upstream's [Docker installation docs](/docs/admins_docs.md). The compose files in this
+repository already use the GPU image:
+
+```sh
+git clone https://github.com/dcwestra/mediacms-gpu.git
+cd mediacms-gpu
+docker compose up -d
+```
+
+For Whisper transcription, add the full image and set `USE_WHISPER_TRANSCRIBE = True` in your settings:
+
+```sh
+docker compose -f docker-compose.yaml -f docker-compose.full.yaml up -d
+```
+
+With your own compose file, use this image and put `celery_worker`, which runs the encodes, on the NVIDIA runtime:
 
 ```yaml
   celery_worker:
@@ -40,9 +64,6 @@ Use the upstream docker compose setup ([docs](/docs/admins_docs.md)) with this i
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
 ```
-
-The host needs the NVIDIA driver and the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 If you don't mount the whole project directory into the containers (the upstream compose files do),
 set the same `SECRET_KEY` environment variable on every MediaCMS container. Otherwise each container

@@ -20,6 +20,11 @@ They are listed in `.github/README.md` ("How it differs from MediaCMS") and pinn
 - `cms/settings.py`: `FFMPEG_THREADS = 0` (0 lets ffmpeg decide).
 - `Dockerfile`: the Jellyfin ffmpeg portable build (version + sha256 ARGs, downloaded in the
   `build-image` stage) replaces upstream's ffmpeg/ffprobe in the `base` stage.
+- Compose files (`docker-compose.yaml`, `docker-compose.full.yaml`, `docker-compose-dev.yaml`,
+  `docker-compose/*.yaml`): services use `ghcr.io/dcwestra/mediacms-gpu:latest` (`:full` in
+  `docker-compose.full.yaml`) instead of `mediacms/mediacms`; the dev files keep their local build
+  images. Every `celery_worker` has `runtime: nvidia` and `NVIDIA_VISIBLE_DEVICES: all` /
+  `NVIDIA_DRIVER_CAPABILITIES: all`. Any compose file upstream adds needs the same treatment.
 
 Everything else, including the celery/supervisord worker configuration, is upstream's.
 

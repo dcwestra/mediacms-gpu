@@ -2,7 +2,7 @@ version: "3"
 
 services:
   migrations:
-    image: mediacms/mediacms:latest
+    image: ghcr.io/dcwestra/mediacms-gpu:latest
     volumes:
       - ./:/home/mediacms.io/mediacms/
     environment:
@@ -22,7 +22,7 @@ services:
       db:
         condition: service_healthy
   web:
-    image: mediacms/mediacms:latest
+    image: ghcr.io/dcwestra/mediacms-gpu:latest
     deploy:
       replicas: 1
     ports:
@@ -37,7 +37,7 @@ services:
     depends_on:
       - migrations
   celery_beat:
-    image: mediacms/mediacms:latest
+    image: ghcr.io/dcwestra/mediacms-gpu:latest
     volumes:
       - ./:/home/mediacms.io/mediacms/
     environment:
@@ -49,12 +49,15 @@ services:
     depends_on:
       - redis
   celery_worker:
-    image: mediacms/mediacms:latest
+    image: ghcr.io/dcwestra/mediacms-gpu:latest
+    runtime: nvidia
     deploy:
       replicas: 1
     volumes:
       - ./:/home/mediacms.io/mediacms/
     environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
       ENABLE_UWSGI: 'no'
       ENABLE_NGINX: 'no'
       ENABLE_CELERY_BEAT: 'no'

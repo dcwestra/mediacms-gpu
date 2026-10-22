@@ -517,6 +517,7 @@ def get_base_ffmpeg_command(
     pass_number,
     enc_type,
     chunk,
+    input_codec=None,
 ):
     """Get the base command for a specific codec, height/rate, and pass
 
@@ -535,6 +536,7 @@ def get_base_ffmpeg_command(
         pass_file {str} -- path to temp pass file
         pass_number {int} -- number of passes
         enc_type {str} -- encoding type (twopass or crf)
+        input_codec {str} -- codec of the input video stream, as reported by ffprobe
     """
 
     # avoid very high frame rates
@@ -549,25 +551,43 @@ def get_base_ffmpeg_command(
     if interlaced:
         filters.append("yadif")
 
+    # Aspect-aware scaling using aspect ratio
     target_width = round(target_height * 16 / 9)
-    scale_filter_opts = [
-        f"if(lt(iw\\,ih)\\,{target_height}\\,{target_width})",  # noqa
-        f"if(lt(iw\\,ih)\\,{target_width}\\,{target_height})",  # noqa
-        "force_original_aspect_ratio=decrease",
-        "force_divisible_by=2",
-        "flags=lanczos",
-    ]
-    scale_filter_str = "scale=" + ":".join(scale_filter_opts)
-    filters.append(scale_filter_str)
+    scale_str = (
+        f"scale=w='if(gt(a,16/9),{target_width},-2)':"
+        f"h='if(gt(a,16/9),-2,{target_height})':"
+        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos"
+    )
+    filters.append(scale_str)
 
     fps_str = f"fps=fps={target_fps}"
     filters.append(fps_str)
 
+    # GPU decoding setup for NVENC encoders. The decoder has to match the
+    # *input* stream's codec, not the target codec.
+    hwaccel_args = []
+    if encoder in ["h264_nvenc", "hevc_nvenc"]:
+        if input_codec == "h264":
+            hwaccel_args = [
+                "-hwaccel", "cuda",
+                "-hwaccel_output_format", "cuda",
+                "-c:v", "h264_cuvid",
+            ]
+            # Add hardware download filter, the filters above run on the CPU
+            filters.insert(0, "hwdownload,format=nv12")
+        else:
+            # Any other input (HEVC incl. 10-bit, VP9, AV1, ProRes...): NVDEC where the
+            # GPU supports it, automatic software decoding where it doesn't. Frames
+            # arrive in system memory in their native pixel format.
+            hwaccel_args = ["-hwaccel", "cuda"]
+
     filters_str = ",".join(filters)
 
-    base_cmd = [
-        settings.FFMPEG_COMMAND,
-        "-y",
+    # Build base command with thread support
+    base_cmd = [settings.FFMPEG_COMMAND, "-threads", str(settings.FFMPEG_THREADS), "-y"]
+    base_cmd.extend(hwaccel_args)
+
+    base_cmd.extend([
         "-i",
         input_file,
         "-c:v",
@@ -576,14 +596,22 @@ def get_base_ffmpeg_command(
         filters_str,
         "-pix_fmt",
         "yuv420p",
-    ]
+    ])
 
     if enc_type == "twopass":
         base_cmd.extend(["-b:v", str(target_rate) + "k"])
     elif enc_type == "crf":
-        base_cmd.extend(["-crf", str(VIDEO_CRFS[codec])])
-        if encoder == "libvpx-vp9":
-            base_cmd.extend(["-b:v", str(target_rate) + "k"])
+        # NVENC encoders use different CRF syntax
+        if encoder in ["h264_nvenc", "hevc_nvenc"]:
+            base_cmd.extend([
+                "-rc", "constqp",
+                "-cq", str(VIDEO_CRFS[codec]),
+                "-preset", "p4",
+            ])
+        else:
+            base_cmd.extend(["-crf", str(VIDEO_CRFS[codec])])
+            if encoder == "libvpx-vp9":
+                base_cmd.extend(["-b:v", str(target_rate) + "k"])
 
     if has_audio:
         base_cmd.extend(
@@ -712,7 +740,26 @@ def produce_ffmpeg_commands(media_file, media_info, resolution, codec, output_fi
     except BaseException:
         media_info = {}
 
-    if codec == "h264":
+    # Normalize codec names to handle variants
+    codec = (codec or "").lower()
+    if codec in ["hvc1", "hev1"]:
+        codec = "h265"
+    elif codec in ["avc1", "avc3"]:
+        codec = "h264"
+
+    def get_gpu_encoder(codec):
+        """Returns GPU encoder if available, None otherwise"""
+        if codec == "h264":
+            return "h264_nvenc"
+        elif codec in ["h265", "hevc"]:
+            return "hevc_nvenc"
+        return None
+
+    # Try GPU encoder first, fall back to software encoders
+    gpu_encoder = get_gpu_encoder(codec)
+    if gpu_encoder:
+        encoder = gpu_encoder
+    elif codec == "h264":
         encoder = "libx264"
         # ext = "mp4"
     elif codec in ["h265", "hevc"]:
@@ -773,6 +820,7 @@ def produce_ffmpeg_commands(media_file, media_info, resolution, codec, output_fi
                 pass_number=pass_number,
                 enc_type=enc_type,
                 chunk=chunk,
+                input_codec=media_info.get("video_codec"),
             )
         )
     return cmds

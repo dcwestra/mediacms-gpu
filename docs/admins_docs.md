@@ -108,6 +108,34 @@ db_1              | 2023-06-27 11:07:42.959 UTC [1] DETAIL:  The data directory 
 
 At this point there are two options: either edit the Docker Compose file and make use of the existing postgres:13 image, or otherwise you have to perform the migration from postgresql 13 to version 15. More notes on https://github.com/mediacms-io/mediacms/pull/749
 
+### Switching PostgreSQL Docker images (Debian/glibc vs Alpine/musl)
+
+Changing the kind of Postgres server image is not a drop-in update for existing installations. This only affects sites whose data directory was created under one C library and later pointed at an image built on another.
+
+Current MediaCMS Docker Compose files use Alpine-based Postgres tags such as `postgres:17.2-alpine`. Older installations often used a Debian/Ubuntu-based image (glibc). If you switch an existing glibc-backed volume to Alpine (musl), Postgres may spam logs with:
+
+```
+WARNING: database "mediacms" has no actual collation version, but a version was recorded
+```
+
+The data directory recorded a collation version from glibc; Alpine's musl-based image cannot supply a matching version. The warning is a collation mismatch, not a MediaCMS application bug, and it cannot be "fixed" by staying on the same volume while flipping image flavors.
+
+**Option 1 — Keep the Debian/Ubuntu-based image (simplest and safest)**
+
+Edit your docker-compose file and set the database image to the matching non-alpine tag (for example `postgres:17.2`). Leave the existing volume alone.
+
+**Option 2 — Logical migration to Alpine**
+
+1. Dump the database from the current (glibc) instance.
+2. Start a fresh Alpine Postgres container with a **new empty** volume.
+3. Restore the dump into the Alpine-based instance.
+
+That rebuilds objects under Alpine collations and avoids the warning. New installs that start on Alpine are unaffected.
+
+### Major PostgreSQL version upgrades
+
+Postgres does not automatically upgrade an on-disk data directory when the server major version changes (see the version 2 → 3 notes above). Besides dump/restore, community helpers such as [pgautoupgrade](https://hub.docker.com/r/pgautoupgrade/pgautoupgrade) can automate upgrading the data directory across major versions; expect downtime of at least a few minutes. Always back up before any database image or version change.
+
 
 
 ## Configuration
@@ -115,7 +143,10 @@ Checkout the configuration docs here.
 
 
 ### Maintenance
-Database is stored on ../postgres_data/ and media_files on media_files/
+Database is stored on `../postgres_data/` and uploaded media on `media_files/`.
+Back up both locations before upgrades, and verify a restore before removing
+the old copy. A PostgreSQL major-version change may require a database
+migration; changing only the image tag can leave the data directory unusable.
 
 
 ## 4. Docker Deployment options
@@ -307,18 +338,41 @@ PRE_UPLOAD_MEDIA_MESSAGE = 'custom message'
 
 ### 5.12 Set email settings
 
-Set correct settings per provider
+Set correct settings per provider. `EMAIL_USE_TLS` and `EMAIL_USE_SSL` are mutually exclusive — only set one of them to `True`.
+
+STARTTLS example (typical port 587):
 
 ```
 DEFAULT_FROM_EMAIL = 'info@mediacms.io'
 EMAIL_HOST_PASSWORD = 'xyz'
 EMAIL_HOST_USER = 'info@mediacms.io'
 EMAIL_USE_TLS = True
+EMAIL_USE_SSL = False
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
 EMAIL_HOST = 'mediacms.io'
 EMAIL_PORT = 587
 ADMIN_EMAIL_LIST = ['info@mediacms.io']
+EMAIL_TIMEOUT = 10
 ```
+
+SSL example (typical port 465). You must set `EMAIL_USE_TLS = False` when enabling SSL:
+
+```
+DEFAULT_FROM_EMAIL = 'info@mediacms.io'
+EMAIL_HOST_PASSWORD = 'xyz'
+EMAIL_HOST_USER = 'info@mediacms.io'
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = True
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+EMAIL_HOST = 'mediacms.io'
+EMAIL_PORT = 465
+ADMIN_EMAIL_LIST = ['info@mediacms.io']
+EMAIL_TIMEOUT = 10
+```
+
+`EMAIL_TIMEOUT` (seconds) is passed to the SMTP connection so a bad TLS/SSL handshake fails instead of hanging forever.
+
+Most notification mail is queued through Celery (`short_tasks`). The site contact form, profile contact form, and authentication emails (password reset, email confirmation) send synchronously so users see a real success or failure message.
 
 ### 5.13 Disallow user registrations from specific domains
 
@@ -752,7 +806,13 @@ Instructions contributed by @alberto98fx
 
 ## 15. Debugging email issues
 On the [Configuration](https://github.com/mediacms-io/mediacms/blob/main/docs/admins_docs.md#5-configuration) section of this guide we've see how to edit the email settings.
-In case we are yet unable to receive email from MediaCMS, the following may help us debug the issue - in most cases it is an issue of setting the correct username, password or TLS option
+In case we are yet unable to receive email from MediaCMS, the following may help us debug the issue - in most cases it is an issue of setting the correct username, password, TLS/SSL option, or port.
+
+Common pitfalls:
+- Port 587 usually needs `EMAIL_USE_TLS = True` and `EMAIL_USE_SSL = False`
+- Port 465 usually needs `EMAIL_USE_SSL = True` and `EMAIL_USE_TLS = False`
+- Leaving both `EMAIL_USE_TLS` and `EMAIL_USE_SSL` as `True` raises an error (they are mutually exclusive)
+- Connecting to port 465 with STARTTLS (TLS only) can hang until `EMAIL_TIMEOUT` expires
 
 Enter the Django shell and inside the shell
 

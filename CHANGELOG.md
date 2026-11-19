@@ -1,5 +1,27 @@
 # Changelog
 
+## [9.5.1](https://github.com/mediacms-io/mediacms/compare/v9.5.0...v9.5.1) (2026-11-18)
+
+### Bug Fixes
+
+* store color_transfer from ffprobe color_transfer in media_file_info ([#1603](https://github.com/mediacms-io/mediacms/issues/1603)) ([bf48db3](https://github.com/mediacms-io/mediacms/commit/bf48db35a700d322922c9f44a7d3c4f5afe5df1d))
+
+### Documentation
+
+* update PostgreSQL Docker image guidance in admin documentation ([#1634](https://github.com/mediacms-io/mediacms/issues/1634)) ([cfc46ba](https://github.com/mediacms-io/mediacms/commit/cfc46bac4444aa7bd798a5a04b558bf467e6a095))
+
+## [9.5.0](https://github.com/mediacms-io/mediacms/compare/v9.4.0...v9.5.0) (2026-11-18)
+
+### Features
+
+* enhance email handling with timeout and error reporting ([#1630](https://github.com/mediacms-io/mediacms/issues/1630)) ([5449142](https://github.com/mediacms-io/mediacms/commit/5449142408b2e8fda66e5e80ecb21352d5cd9784))
+
+### Documentation
+
+* add AI disclosure and attestation to PR and issue templates ([#1640](https://github.com/mediacms-io/mediacms/issues/1640)) ([e25fb95](https://github.com/mediacms-io/mediacms/commit/e25fb95377297b660bbc7686df5656b03e6238ea))
+* add Docker upgrade checklist ([#1562](https://github.com/mediacms-io/mediacms/issues/1562)) ([6f9176a](https://github.com/mediacms-io/mediacms/commit/6f9176a2d01a67c45f5192e769b81cc3cd362190))
+* clarify MediaCMS Docker maintenance backups ([#1564](https://github.com/mediacms-io/mediacms/issues/1564)) ([f2e4113](https://github.com/mediacms-io/mediacms/commit/f2e41136277d55d0f68642e0aeb91ec89f47a936))
+
 ## [9.4.0](https://github.com/mediacms-io/mediacms/compare/v9.3.1...v9.4.0) (2026-10-26)
 
 ### Features

@@ -57,6 +57,18 @@ RUN apt-get update -y && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Intel GPU (VAAPI) support. The Jellyfin ffmpeg build loads libva and the VA driver at runtime instead
+# of bundling them, and Debian ships the full Intel media driver in its non-free component.
+RUN sed -i 's/^Components:.*/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update -y && \
+    apt-get install --no-install-recommends -y \
+        libva2 \
+        libva-drm2 \
+        intel-media-va-driver-non-free \
+        vainfo \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set up virtualenv first
 RUN mkdir -p /home/mediacms.io/mediacms/{logs} && \
     cd /home/mediacms.io && \

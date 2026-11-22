@@ -33,6 +33,25 @@ fi
 # Exclude package-lock.json files that may not exist or be removed during frontend setup
 find /home/mediacms.io/mediacms ! \( -path "*.git*" -o -name "package-lock.json" \) -exec chown www-data:$TARGET_GID {} + 2>/dev/null || true
 
+# GPU render nodes (Intel VAAPI): celery runs as www-data under supervisord, which resets the
+# supplementary groups of the processes it starts, so docker's group_add does not reach it.
+# www-data has to be a member of the group that owns the node, in this container's /etc/group.
+# Does nothing when no /dev/dri is passed into the container.
+for NODE in /dev/dri/renderD*; do
+    [ -e "$NODE" ] || continue
+    NODE_GID=$(stat -c "%g" "$NODE")
+    if [ "$NODE_GID" = "0" ]; then
+        echo "entrypoint.sh: $NODE is owned by group root, www-data will not be able to use it" >&2
+        continue
+    fi
+    NODE_GROUP=$(getent group "$NODE_GID" | cut -d: -f1)
+    if [ -z "$NODE_GROUP" ]; then
+        NODE_GROUP="render-$NODE_GID"
+        groupadd -g "$NODE_GID" "$NODE_GROUP"
+    fi
+    usermod -a -G "$NODE_GROUP" www-data
+done
+
 chmod +x /home/mediacms.io/mediacms/deploy/docker/start.sh /home/mediacms.io/mediacms/deploy/docker/prestart.sh
 
 # Generate or read SECRET_KEY once, shared across all containers via the

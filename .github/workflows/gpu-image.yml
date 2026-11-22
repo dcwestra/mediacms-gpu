@@ -51,7 +51,7 @@ jobs:
             type=sha,prefix=sha-
           labels: |
             org.opencontainers.image.title=MediaCMS GPU
-            org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID encoding (Jellyfin ffmpeg)
+            org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID or Intel VAAPI encoding (Jellyfin ffmpeg)
             org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Docker meta for full image
@@ -67,7 +67,7 @@ jobs:
             type=sha,prefix=sha-,suffix=-full
           labels: |
             org.opencontainers.image.title=MediaCMS GPU (full)
-            org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID encoding (Jellyfin ffmpeg) and Whisper transcription
+            org.opencontainers.image.description=MediaCMS with NVIDIA NVENC/CUVID or Intel VAAPI encoding (Jellyfin ffmpeg) and Whisper transcription
             org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Set up Docker Buildx

@@ -216,6 +216,12 @@ X_ACCEL_AUTH_CACHE_SECONDS = 300
 FFMPEG_COMMAND = "ffmpeg"  # this is the path
 FFPROBE_COMMAND = "ffprobe"  # this is the path
 FFMPEG_THREADS = 0  # -threads for the encoding ffmpeg commands; 0 lets ffmpeg decide
+# GPU that encodes and decodes video: "nvidia" (NVENC/CUVID), "intel" (VAAPI) or "none" (software encoders)
+FFMPEG_GPU = os.getenv("FFMPEG_GPU") or "nvidia"
+# Intel (VAAPI) only: the render node to use, and the fixed-function low-power encoder, which some GPUs
+# (e.g. Intel Arc) need. FFMPEG_VAAPI_LOW_POWER accepts 1/0 or true/false, unset keeps the driver default.
+FFMPEG_VAAPI_DEVICE = os.getenv("FFMPEG_VAAPI_DEVICE") or "/dev/dri/renderD128"
+FFMPEG_VAAPI_LOW_POWER = {"1": True, "true": True, "0": False, "false": False}.get(os.getenv("FFMPEG_VAAPI_LOW_POWER", "").strip().lower())
 MP4HLS = "mp4hls"
 
 MASK_IPS_FOR_ACTIONS = True

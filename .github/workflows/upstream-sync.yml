@@ -8,8 +8,8 @@ name: Upstream sync
 #   Needs the CLAUDE_CODE_OAUTH_TOKEN secret (a Claude subscription token from `claude setup-token`).
 # - Anything that can't be fixed: an issue is opened.
 #
-# Verification = build the image, then .github/upstream-sync/verify.sh (ffmpeg NVENC/CUVID,
-# manage.py check, tests/gpu).
+# Verification = build the image, then .github/upstream-sync/verify.sh (ffmpeg NVENC/CUVID/VAAPI,
+# libva and the Intel driver, manage.py check, tests/gpu).
 
 on:
   schedule:

@@ -1,0 +1,17 @@
+# Encodes on an Intel GPU (VAAPI) instead of an NVIDIA one. Add it to any of the compose files:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.intel.yaml up -d
+#
+# The host needs a Linux kernel with the Intel GPU driver (i915 or xe), so that /dev/dri/renderD128 exists.
+version: "3"
+
+services:
+  celery_worker:
+    # the compose files default to the NVIDIA runtime, which an Intel host doesn't have
+    runtime: runc
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      FFMPEG_GPU: intel
+      # FFMPEG_VAAPI_DEVICE: /dev/dri/renderD129  # when the render node isn't renderD128 (e.g. a second GPU)
+      # FFMPEG_VAAPI_LOW_POWER: 1  # needed on some GPUs, e.g. Intel Arc

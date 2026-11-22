@@ -98,6 +98,14 @@ EXTENSIONS = {"h264": "mp4", "h265": "mp4", "vp9": "webm"}
 
 VIDEO_PROFILES = {"h264": "main", "h265": "main"}
 
+# Hardware encoders per GPU vendor, chosen with settings.FFMPEG_GPU: "nvidia" (NVENC, the default),
+# "intel" (VAAPI) or "none" (software encoders). VP9 always stays on libvpx.
+GPU_ENCODERS = {
+    "nvidia": {"h264": "h264_nvenc", "h265": "hevc_nvenc"},
+    "intel": {"h264": "h264_vaapi", "h265": "hevc_vaapi"},
+    "none": {},
+}
+
 
 def get_portal_workflow():
     return settings.PORTAL_WORKFLOW
@@ -501,6 +509,18 @@ def show_file_size(size):
     return size
 
 
+def get_ffmpeg_gpu():
+    """The GPU used for encoding, from settings.FFMPEG_GPU: "nvidia" (default), "intel" or "none"."""
+    gpu = str(getattr(settings, "FFMPEG_GPU", "nvidia")).strip().lower()
+    if gpu not in GPU_ENCODERS:
+        raise ValueError(f"Unsupported FFMPEG_GPU setting {gpu!r}, use one of: {', '.join(GPU_ENCODERS)}")
+    return gpu
+
+
+def is_vaapi_encoder(encoder):
+    return encoder in GPU_ENCODERS["intel"].values()
+
+
 def get_base_ffmpeg_command(
     input_file,
     output_file,
@@ -580,6 +600,21 @@ def get_base_ffmpeg_command(
             # GPU supports it, automatic software decoding where it doesn't. Frames
             # arrive in system memory in their native pixel format.
             hwaccel_args = ["-hwaccel", "cuda"]
+    elif is_vaapi_encoder(encoder):
+        # Intel (VAAPI): decode on the GPU, with automatic software decoding for streams it
+        # can't handle. Frames come back to system memory, go through the CPU filters above
+        # and are uploaded to the GPU for the encoder.
+        hwaccel_args = [
+            "-init_hw_device",
+            f"vaapi=va:{getattr(settings, 'FFMPEG_VAAPI_DEVICE', '/dev/dri/renderD128')}",
+            "-filter_hw_device",
+            "va",
+            "-hwaccel",
+            "vaapi",
+            "-hwaccel_device",
+            "va",
+        ]
+        filters.extend(["format=nv12", "hwupload"])
 
     filters_str = ",".join(filters)
 
@@ -594,9 +629,9 @@ def get_base_ffmpeg_command(
         encoder,
         "-filter:v",
         filters_str,
-        "-pix_fmt",
-        "yuv420p",
     ])
+    if not is_vaapi_encoder(encoder):
+        base_cmd.extend(["-pix_fmt", "yuv420p"])
 
     if enc_type == "twopass":
         base_cmd.extend(["-b:v", str(target_rate) + "k"])
@@ -608,6 +643,8 @@ def get_base_ffmpeg_command(
                 "-cq", str(VIDEO_CRFS[codec]),
                 "-preset", "p4",
             ])
+        elif is_vaapi_encoder(encoder):
+            base_cmd.extend(["-b:v", str(target_rate) + "k"])
         else:
             base_cmd.extend(["-crf", str(VIDEO_CRFS[codec])])
             if encoder == "libvpx-vp9":
@@ -694,6 +731,40 @@ def get_base_ffmpeg_command(
                 VIDEO_PROFILES[codec],
             ]
         )
+    elif is_vaapi_encoder(encoder):
+        cmd.extend(
+            [
+                "-g",
+                str(keyframe_distance * 2),
+                "-force_key_frames",
+                "expr:gte(t,n_forced*" + str(KEYFRAME_DISTANCE) + ")",
+                "-profile:v",
+                VIDEO_PROFILES[codec],
+            ]
+        )
+        if codec == "h264":
+            # level_idc: 42 is level 4.2, 52 is 5.2 (the same choice as libx264 above)
+            cmd.extend(["-level", "42" if target_height <= 1080 else "52"])
+
+        # VAAPI has no CRF or two-pass mode: single-pass VBR towards the target bitrate (-b:v above), capped
+        # with -maxrate/-bufsize like the libx264 path. Constant QP has no cap, and made 1080p drone
+        # footage come out at 44 Mbps against 7 Mbps for libx264.
+        cmd.extend(
+            [
+                "-rc_mode",
+                "VBR",
+                "-maxrate",
+                str(int(int(target_rate) * MAX_RATE_MULTIPLIER)) + "k",
+                "-bufsize",
+                str(int(int(target_rate) * BUF_SIZE_MULTIPLIER)) + "k",
+            ]
+        )
+
+        # fixed-function encoder; some GPUs (e.g. Intel Arc) need it, None keeps the driver default
+        low_power = getattr(settings, "FFMPEG_VAAPI_LOW_POWER", None)
+        if low_power is not None:
+            cmd.extend(["-low_power", "1" if low_power else "0"])
+
     elif encoder == "libvpx-vp9":
         cmd.extend(
             [
@@ -748,12 +819,8 @@ def produce_ffmpeg_commands(media_file, media_info, resolution, codec, output_fi
         codec = "h264"
 
     def get_gpu_encoder(codec):
-        """Returns GPU encoder if available, None otherwise"""
-        if codec == "h264":
-            return "h264_nvenc"
-        elif codec in ["h265", "hevc"]:
-            return "hevc_nvenc"
-        return None
+        """Returns the encoder of the configured GPU (settings.FFMPEG_GPU), None if there is none"""
+        return GPU_ENCODERS[get_ffmpeg_gpu()].get("h265" if codec == "hevc" else codec)
 
     # Try GPU encoder first, fall back to software encoders
     gpu_encoder = get_gpu_encoder(codec)
@@ -794,9 +861,10 @@ def produce_ffmpeg_commands(media_file, media_info, resolution, codec, output_fi
     else:
         enc_type = "twopass"
 
-    if enc_type == "twopass":
+    if enc_type == "twopass" and not is_vaapi_encoder(encoder):
         passes = [1, 2]
-    elif enc_type == "crf":
+    else:
+        # CRF is single pass, and so is anything on VAAPI (it has no two-pass mode)
         passes = [2]
 
     interlaced = media_info.get("interlaced")

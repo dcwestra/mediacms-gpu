@@ -67,20 +67,21 @@ def compose_service(path, name):
 
 @override_settings(FFMPEG_GPU="intel")
 class IntelEncoderTests(SimpleTestCase):
-    def test_h264_profile_encodes_with_vaapi_constant_qp(self):
+    def test_h264_profile_encodes_with_vaapi_vbr(self):
         cmd = command()
 
         self.assertEqual(output_encoder(cmd), "h264_vaapi")
-        self.assertEqual(cmd[cmd.index("-rc_mode") + 1], "CQP")
-        self.assertEqual(cmd[cmd.index("-qp") + 1], str(helpers.VIDEO_CRFS["h264"]))
+        self.assertEqual(cmd[cmd.index("-rc_mode") + 1], "VBR")
+        self.assertEqual(cmd[cmd.index("-b:v") + 1], "2500k")
         self.assertEqual(cmd[cmd.index("-profile:v") + 1], "main")
-        self.assertNotIn("-crf", cmd)
+        for option in ("-crf", "-qp"):
+            self.assertNotIn(option, cmd)
 
     def test_h265_profile_encodes_with_hevc_vaapi(self):
         cmd = command(codec="h265")
 
         self.assertEqual(output_encoder(cmd), "hevc_vaapi")
-        self.assertEqual(cmd[cmd.index("-qp") + 1], str(helpers.VIDEO_CRFS["h265"]))
+        self.assertEqual(cmd[cmd.index("-b:v") + 1], str(helpers.VIDEO_BITRATES["h265"][25][720]) + "k")
         self.assertNotIn("-level", cmd)
 
     def test_codec_aliases_map_to_vaapi(self):
@@ -161,26 +162,28 @@ class IntelDecoderTests(SimpleTestCase):
 
 @override_settings(FFMPEG_GPU="intel")
 class IntelRateControlTests(SimpleTestCase):
-    def test_short_clips_are_single_pass_vbr(self):
-        # VAAPI has no two-pass mode, so one command, not the pass 1 + pass 2 pair
-        cmds = commands(media_info(video_duration=1))
-        cmd = cmds[0]
+    def test_every_video_is_single_pass_vbr_capped_like_libx264(self):
+        # constant QP has no cap: it made 1080p drone footage 44 Mbps against 7 Mbps from libx264
+        for duration in (1, 600):
+            with self.subTest(duration=duration):
+                cmds = commands(media_info(video_duration=duration))
+                cmd = cmds[0]
 
-        self.assertEqual(len(cmds), 1)
-        self.assertEqual(cmd[cmd.index("-rc_mode") + 1], "VBR")
-        self.assertEqual(cmd[cmd.index("-b:v") + 1], "2500k")
-        self.assertEqual(cmd[cmd.index("-maxrate") + 1], "3750k")
-        self.assertEqual(cmd[cmd.index("-bufsize") + 1], "3750k")
-        self.assertNotIn("-qp", cmd)
-        self.assertNotIn("/dev/null", cmd)
-        self.assertEqual(cmd[-1], "out.mp4")
+                self.assertEqual(len(cmds), 1)  # no two-pass mode, so no pass 1 to /dev/null
+                self.assertEqual(cmd[cmd.index("-rc_mode") + 1], "VBR")
+                self.assertEqual(cmd[cmd.index("-b:v") + 1], "2500k")
+                self.assertEqual(cmd[cmd.index("-maxrate") + 1], "3750k")
+                self.assertEqual(cmd[cmd.index("-bufsize") + 1], "3750k")
+                self.assertNotIn("-qp", cmd)
+                self.assertNotIn("/dev/null", cmd)
+                self.assertEqual(cmd[-1], "out.mp4")
 
-    def test_long_videos_are_constant_qp(self):
-        cmd = command(media_info(video_duration=600))
+    def test_bitrate_follows_resolution_and_frame_rate(self):
+        hd = command(media_info(), resolution=1080)
+        hd60 = command(media_info(video_frame_rate_n=60), resolution=1080)
 
-        self.assertEqual(cmd[cmd.index("-rc_mode") + 1], "CQP")
-        self.assertNotIn("-b:v", cmd)
-        self.assertNotIn("-maxrate", cmd)
+        self.assertEqual((hd[hd.index("-b:v") + 1], hd[hd.index("-maxrate") + 1]), ("4500k", "6750k"))
+        self.assertEqual((hd60[hd60.index("-b:v") + 1], hd60[hd60.index("-maxrate") + 1]), ("7500k", "11250k"))
 
     def test_low_power_is_left_to_the_driver_by_default(self):
         self.assertNotIn("-low_power", command())

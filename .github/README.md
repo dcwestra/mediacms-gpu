@@ -111,9 +111,9 @@ Set these on `celery_worker` (in `docker-compose.intel.yaml`, or your own compos
 
 How Intel encoding differs from NVIDIA's: sources are decoded on the GPU where it supports the codec
 (otherwise ffmpeg falls back to software decoding), scaling still runs on the CPU, and the GPU
-encodes. VAAPI has no CRF mode, so videos use constant QP at the same numbers (23 for h264, 28 for h265),
-and no two-pass mode, so short clips use single-pass VBR at the target bitrate. File sizes at a given
-quality number differ from x264, x265 and NVENC.
+encodes. VAAPI has no CRF and no two-pass mode, so every video is encoded in a single pass with
+variable bitrate (VBR) at the per-resolution target bitrate, with the same 1.5x maximum bitrate cap that
+the software encoder uses. File sizes are therefore in line with the software encodes.
 
 ### Small servers
 

@@ -18,7 +18,7 @@ They are listed in `.github/README.md` ("How it differs from MediaCMS") and pinn
   codec, NVENC rate control flags, an aspect-aware scale filter, and `-threads FFMPEG_THREADS`.
   The GPU is chosen by `settings.FFMPEG_GPU` (`GPU_ENCODERS`, `get_ffmpeg_gpu()`, `is_vaapi_encoder()`):
   `nvidia` (the default, as above), `intel` (VAAPI: `-hwaccel vaapi` decoding with software fallback,
-  the CPU filters, `format=nv12,hwupload`, constant-QP rate control, no `-pix_fmt`, a single pass) or
+  the CPU filters, `format=nv12,hwupload`, single-pass VBR at the per-resolution target bitrate with the same maxrate/bufsize cap as libx264, no `-pix_fmt`) or
   `none` (libx264/libx265). The NVIDIA output must stay exactly as it is.
 - `files/tasks.py` (chunk split) and `files/models/encoding.py` (chunk concat): `-threads FFMPEG_THREADS`.
 - `cms/settings.py`: `FFMPEG_THREADS = 0` (0 lets ffmpeg decide), and the environment-driven `FFMPEG_GPU`

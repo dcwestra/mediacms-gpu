@@ -644,7 +644,7 @@ def get_base_ffmpeg_command(
                 "-preset", "p4",
             ])
         elif is_vaapi_encoder(encoder):
-            base_cmd.extend(["-rc_mode", "CQP", "-qp", str(VIDEO_CRFS[codec])])
+            base_cmd.extend(["-b:v", str(target_rate) + "k"])
         else:
             base_cmd.extend(["-crf", str(VIDEO_CRFS[codec])])
             if encoder == "libvpx-vp9":
@@ -746,18 +746,19 @@ def get_base_ffmpeg_command(
             # level_idc: 42 is level 4.2, 52 is 5.2 (the same choice as libx264 above)
             cmd.extend(["-level", "42" if target_height <= 1080 else "52"])
 
-        if enc_type == "twopass":
-            # VAAPI has no two-pass mode: single-pass VBR towards the target bitrate (-b:v above)
-            cmd.extend(
-                [
-                    "-rc_mode",
-                    "VBR",
-                    "-maxrate",
-                    str(int(int(target_rate) * MAX_RATE_MULTIPLIER)) + "k",
-                    "-bufsize",
-                    str(int(int(target_rate) * BUF_SIZE_MULTIPLIER)) + "k",
-                ]
-            )
+        # VAAPI has no CRF or two-pass mode: single-pass VBR towards the target bitrate (-b:v above), capped
+        # with -maxrate/-bufsize like the libx264 path. Constant QP has no cap, and made 1080p drone
+        # footage come out at 44 Mbps against 7 Mbps for libx264.
+        cmd.extend(
+            [
+                "-rc_mode",
+                "VBR",
+                "-maxrate",
+                str(int(int(target_rate) * MAX_RATE_MULTIPLIER)) + "k",
+                "-bufsize",
+                str(int(int(target_rate) * BUF_SIZE_MULTIPLIER)) + "k",
+            ]
+        )
 
         # fixed-function encoder; some GPUs (e.g. Intel Arc) need it, None keeps the driver default
         low_power = getattr(settings, "FFMPEG_VAAPI_LOW_POWER", None)
